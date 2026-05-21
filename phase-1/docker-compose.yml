@@ -27,6 +27,7 @@
     restart: unless-stopped
     ports:
       - "8081:8081"
+      - "8082:8082"
     volumes:
       - nexus_data:/nexus-data
     environment:
