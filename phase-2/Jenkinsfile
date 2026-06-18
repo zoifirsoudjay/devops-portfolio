@@ -68,4 +68,41 @@ pipeline {
             echo "❌ Pipeline échoué au build ${IMAGE_TAG}"
         }
     }
+
+    stage('Update Dashboard') {
+    steps {
+        withCredentials([
+            usernamePassword(
+                credentialsId: 'github-credentials',
+                usernameVariable: 'GIT_USER',
+                passwordVariable: 'GIT_PASS'
+            ),
+            string(
+                credentialsId: 'jenkins-token',
+                variable: 'JENKINS_TOKEN'
+            )
+        ]) {
+            sh """
+                pip install requests --quiet
+
+                # Générer le dashboard
+                JENKINS_URL=http://localhost:8080 \
+                JENKINS_USER=admin \
+                JENKINS_TOKEN=${JENKINS_TOKEN} \
+                JENKINS_JOB=flask-app \
+                OUTPUT_FILE=dashboard.html \
+                python3 phase-3/portfolio/scripts/generate_dashboard.py
+
+                # Pusher sur gh-pages
+                git fetch origin gh-pages
+                git checkout gh-pages
+                mv dashboard.html dashboard.html
+                git add dashboard.html
+                git commit -m "ci: update dashboard [skip ci]" || echo "Rien à commiter"
+                git push https://${GIT_USER}:${GIT_PASS}@github.com/zoifirsoudjay/devops-portfolio.git gh-pages
+                git checkout main
+            """
+        }
+    }
+}
 }
