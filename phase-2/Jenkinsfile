@@ -1,0 +1,108 @@
+pipeline {
+    agent any
+
+    triggers {
+        githubPush()
+    }
+
+    environment {
+        NEXUS_REGISTRY = "192.168.49.1:8082"
+        IMAGE_NAME     = "flask-app"
+        IMAGE_TAG      = "${BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Build & Test') {
+            steps {
+                sh """
+                    docker build \
+                      -t ${NEXUS_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} \
+                      ./app
+                """
+            }
+        }
+
+        stage('Push to Nexus') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'nexus-credentials',
+                    usernameVariable: 'USER',
+                    passwordVariable: 'PASS'
+                )]) {
+                    sh """
+                        echo $PASS | docker login ${NEXUS_REGISTRY} -u $USER --password-stdin
+                        docker push ${NEXUS_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+
+        stage('Update k8s manifest') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-credentials',
+                    usernameVariable: 'GIT_USER',
+                    passwordVariable: 'GIT_PASS'
+                )]) {
+                    sh """
+                        git config user.email "jenkins@ci.local"
+                        git config user.name "Jenkins"
+
+                        sed -i 's|image: ${NEXUS_REGISTRY}/${IMAGE_NAME}:.*|image: ${NEXUS_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}|' \
+                            phase-3/k8s/deployment.yaml
+
+                        git add phase-3/k8s/deployment.yaml
+                        git commit -m "ci: update image tag to ${IMAGE_TAG} [skip ci]"
+                        git push https://${GIT_USER}:${GIT_PASS}@https://github.com/zoifirsoudjay/devops-portfolio.git main
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Build ${IMAGE_TAG} déployé — ArgoCD sync en cours"
+        }
+        failure {
+            echo "❌ Pipeline échoué au build ${IMAGE_TAG}"
+        }
+    }
+
+    stage('Update Dashboard') {
+    steps {
+        withCredentials([
+            usernamePassword(
+                credentialsId: 'github-credentials',
+                usernameVariable: 'GIT_USER',
+                passwordVariable: 'GIT_PASS'
+            ),
+            string(
+                credentialsId: 'jenkins-token',
+                variable: 'JENKINS_TOKEN'
+            )
+        ]) {
+            sh """
+                pip install requests --quiet
+
+                # Générer le dashboard
+                JENKINS_URL=http://localhost:8080 \
+                JENKINS_USER=admin \
+                JENKINS_TOKEN=${JENKINS_TOKEN} \
+                JENKINS_JOB=flask-app \
+                OUTPUT_FILE=dashboard.html \
+                python3 phase-3/portfolio/scripts/generate_dashboard.py
+
+                # Pusher sur gh-pages
+                git fetch origin gh-pages
+                git checkout gh-pages
+                mv dashboard.html dashboard.html
+                git add dashboard.html
+                git commit -m "ci: update dashboard [skip ci]" || echo "Rien à commiter"
+                git push https://${GIT_USER}:${GIT_PASS}@github.com/zoifirsoudjay/devops-portfolio.git gh-pages
+                git checkout main
+            """
+        }
+    }
+}
+}
